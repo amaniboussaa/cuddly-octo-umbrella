@@ -1,0 +1,33 @@
+Titre : feat: auto-assign default quota plan to users without explicit assignment
+Description :
+## Description
+
+Quand un utilisateur n'a aucun plan de quota assigné explicitement, il reçoit
+automatiquement le plan "standard" (1000 requêtes/jour, 100 MB/jour).
+
+Si le plan "standard" n'existe pas en base, il est créé automatiquement.
+
+## Modifications
+
+- **QuotaService.cs** — Ajout de `GetOrCreateDefaultPlanAsync()` qui crée le
+  plan par défaut s'il manque. `ResolveLimitsAsync()` et
+  `GetEffectivePlanAsync()` tombent maintenant sur ce plan quand aucune
+  assignation n'est trouvée.
+
+- **QuotaServiceTest.cs** — 2 tests :
+  - `NoAssignment_FallsBackToDefaultPlan` : utilisateur sans assignation →
+    plan standard existant
+  - `NoAssignmentAndNoDefaultPlan_AutoCreatesIt` : utilisateur sans
+    assignation + plan standard inexistant → création automatique
+
+## Comportement attendu
+
+- Nouvel utilisateur sans plan → plan "standard" appliqué
+- Admin peut modifier le plan "standard" via l'interface ou l'API
+- Les modifications sont prises en compte immédiatement
+
+## Tests
+
+```powershell
+dotnet test --filter FullyQualifiedName~QuotaServiceTest
+# 7 tests passed, 0 failed
