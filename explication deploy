@@ -1,0 +1,91 @@
+# Script de déploiement Ddata sur IIS
+# Lancez en PowerShell Administrateur
+# Usage : .\deploy-iis.ps1
+Commentaires : indiquent qu'il faut lancer en tant qu'Administrateur.
+param(
+    [string]$DossierPublish = "C:\deploy\ddata"
+)
+Définit un paramètre optionnel : le dossier de publication (par défaut C:\deploy\ddata). Si tu passes un autre chemin : .\deploy-iis.ps1 -DossierPublish "D:\autre".
+$racine = $PSScriptRoot
+$pool = "ddata-pool"
+$site = "Default Web Site"
+$app = "ddata"
+Variables :
+- $racine = dossier où se trouve le script (la racine du projet)
+- $pool = nom du pool IIS : ddata-pool
+- $site = site IIS hôte : Default Web Site
+- $app = nom de l'application IIS sous le site : ddata
+Write-Host "=== Déploiement Ddata sur IIS ==="
+Affiche un titre.
+# 1. BUILD
+Write-Host "[1/5] Build..."
+dotnet build "$racine\src\Ddata\Ddata.csproj" -c Release -p:SkipClientBuild=true
+Build le projet .NET en mode Release. SkipClientBuild=true évite de compiler Angular (gain de temps).
+# 2. PUBLISH
+Write-Host "[2/5] Publish..."
+dotnet publish "$racine\src\Ddata\Ddata.csproj" -c Release -o $DossierPublish -p:SkipClientBuild=true
+Publish copie les fichiers compilés + dépendances + web.config dans C:\deploy\ddata.
+# 3. AJOUTER LES VARIABLES D'ENVIRONNEMENT AU WEB.CONFIG
+Write-Host "[3/5] Configuration web.config..."
+$fichier = "$DossierPublish\web.config"
+[xml]$xml = Get-Content $fichier
+Charge le fichier web.config généré par dotnet publish en tant que XML.
+$asp = $xml.SelectSingleNode("//aspNetCore")
+Trouve la balise <aspNetCore> dans le XML (c'est là que .NET Core/IIS stocke sa config).
+if ($asp.EnvironmentVariables -eq $null) {
+    $vars = $xml.CreateElement("environmentVariables")
+    $v1 = $xml.CreateElement("environmentVariable")
+    $v1.SetAttribute("name", "ASPNETCORE_ENVIRONMENT")
+    $v1.SetAttribute("value", "Development")
+    $vars.AppendChild($v1) | Out-Null
+    $v2 = $xml.CreateElement("environmentVariable")
+    $v2.SetAttribute("name", "Development__DisableKerberos")
+    $v2.SetAttribute("value", "true")
+    $vars.AppendChild($v2) | Out-Null
+    $asp.AppendChild($vars) | Out-Null
+    $asp.SetAttribute("stdoutLogEnabled", "true")
+    $xml.Save($fichier)
+}
+Si aucune <environmentVariables> n'existe encore dans <aspNetCore>, il en crée une avec deux variables :
+- ASPNETCORE_ENVIRONMENT=Development → l'appli tourne en mode Development
+- Development__DisableKerberos=true → désactive le handler Negotiate (évite le crash si Windows Auth pas activé dans IIS)
+- stdoutLogEnabled=true → active les logs de démarrage dans logs/
+Puis sauvegarde le fichier.
+# 4. CONFIGURER IIS
+Write-Host "[4/5] Configuration IIS..."
+Import-Module WebAdministration
+Importe le module PowerShell IIS pour manipuler les sites/pools.
+# Pool
+if (-not (Test-Path "IIS:\AppPools\$pool")) {
+    New-Item "IIS:\AppPools\$pool" -Force | Out-Null
+    Write-Host "  Pool créé"
+}
+Si le pool ddata-pool n'existe pas, le crée.
+Set-ItemProperty "IIS:\AppPools\$pool" managedRuntimeVersion ""
+Set-ItemProperty "IIS:\AppPools\$pool" startMode "AlwaysRunning"
+- managedRuntimeVersion "" → pas de .NET Framework (l'appli tourne sur .NET Core/9.0, auto-hébergée via le module ASP.NET Core)
+- startMode "AlwaysRunning" → le pool démarre automatiquement au boot Windows (pas besoin d'attendre une première requête)
+# Application
+$cheminApp = "IIS:\Sites\$site\$app"
+if (-not (Test-Path $cheminApp)) {
+    New-Item $cheminApp -PhysicalPath $DossierPublish -ApplicationPool $pool -Type "Application" -Force | Out-Null
+    Write-Host "  Application créée"
+} else {
+    Set-ItemProperty $cheminApp physicalPath $DossierPublish
+    Set-ItemProperty $cheminApp applicationPool $pool
+}
+Crée l'application IIS ddata sous Default Web Site pointant vers C:\deploy\ddata. Si elle existe déjà, met juste à jour le chemin et le pool.
+# Authentification
+Set-WebConfigurationProperty "/system.webServer/security/authentication/windowsAuthentication" -Name enabled -Value $false -PSPath "IIS:\" -Location "$site/$app"
+Set-WebConfigurationProperty "/system.webServer/security/authentication/anonymousAuthentication" -Name enabled -Value $true -PSPath "IIS:\" -Location "$site/$app"
+- Windows Auth = OFF (pas encore configuré)
+- Anonyme = ON (nécessaire pour que Keycloak et le SPA fonctionnent)
+# 5. REDÉMARRER
+Write-Host "[5/5] Redémarrage..."
+Restart-WebAppPool $pool
+Redémarre le pool pour prendre en compte les changements.
+Write-Host ""
+Write-Host "=== Terminé ===" -ForegroundColor Green
+Write-Host "URL : http://localhost:5000/$app"
+Write-Host "Logs : $DossierPublish\logs\"
+Affiche le résultat : URL d'accès et dossier des logs.
