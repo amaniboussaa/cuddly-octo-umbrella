@@ -1,6 +1,5 @@
 # Script de déploiement Ddata PRODUCTION (S3 → Unzip → IIS)
 # Lancez en PowerShell Administrateur
-# Prérequis : AWS Tools for PowerShell (Install-Module -Name AWSPowerShell.NetCore)
 
 #Requires -RunAsAdministrator
 
@@ -18,19 +17,52 @@ $port = 5000
 
 Write-Host "=== Déploiement Ddata PRODUCTION (depuis S3) ==="
 
+# 0. CONFIGURATION AWS AUTOMATIQUE
+Write-Host "[0/5] Vérification AWS..."
+
+# Installer le module AWS si absent
+if (-not (Get-Module -ListAvailable -Name AWSPowerShell.NetCore)) {
+    Write-Host "  Installation du module AWSPowerShell.NetCore..."
+    Install-PackageProvider -Name NuGet -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+    Install-Module -Name AWSPowerShell.NetCore -Force -AllowClobber
+}
+Import-Module AWSPowerShell.NetCore -ErrorAction Stop
+
+# Vérifier si des credentials AWS sont configurés
+$canConnect = $false
+try {
+    $null = Get-AWSCredential -ErrorAction Stop
+    $canConnect = $true
+} catch {
+    # Rien
+}
+
+if (-not $canConnect) {
+    Write-Host "  Aucun credential AWS trouvé. Configuration requise :" -ForegroundColor Yellow
+    $accessKey = Read-Host "  Access Key ID"
+    $secretKey = Read-Host "  Secret Access Key" -AsSecureString
+    $profileName = "ddata-deploy"
+    Set-AWSCredential -AccessKey $accessKey -SecretKey $secretKey -StoreAs $profileName
+    Set-AWSRegion -Region $Region
+    Write-Host "  Credentials sauvegardés (profile: $profileName)" -ForegroundColor Green
+}
+
+Set-AWSRegion -Region $Region
+
 # 1. TÉLÉCHARGER LE ZIP DEPUIS S3
-Write-Host "[1/3] Téléchargement depuis S3..."
+Write-Host "[1/5] Téléchargement depuis S3..."
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $ZipPath -Region $Region
 Write-Host "  Téléchargé : s3://$S3Bucket/$S3Key"
 
 # 2. EXTRAIRE VERS LE DOSSIER DE DÉPLOIEMENT
-Write-Host "[2/3] Extraction..."
+Write-Host "[2/5] Extraction..."
 if (Test-Path $DossierDeploy) { Remove-Item "$DossierDeploy\*" -Recurse -Force }
 Expand-Archive -Path $ZipPath -DestinationPath $DossierDeploy -Force
 
 # 3. CONFIGURER LE WEB.CONFIG POUR LA PRODUCTION
-Write-Host "[3/3] Configuration web.config..."
+Write-Host "[3/5] Configuration web.config..."
 $fichier = "$DossierDeploy\web.config"
 [xml]$xml = Get-Content $fichier
 $asp = $xml.SelectSingleNode("//aspNetCore")
